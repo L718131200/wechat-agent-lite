@@ -210,6 +210,45 @@ def test_ratelimit():
     check("关闭后不拦", a1 and a2)
 
 
+def test_message_classify():
+    """把引擎的原始消息翻译成可读文本。
+
+    核心红线：**卡片/未知类型的 XML 原文绝不能进上下文**（既费 token 又读不懂）。
+    """
+    print("\n== 消息类型翻译 ==")
+    from wechat_agent.messages import classify, extract_title, is_poke
+
+    k, t, skip = classify("文本", "wxid_abc123:\n你好")
+    check("文本剥前缀", k == "text" and t == "你好" and not skip, t)
+
+    k, t, skip = classify("图片", 'wxid_x:\n<msg><img aeskey="x"/></msg>')
+    check("图片不产正文", k == "image" and t == "" and not skip, t)
+
+    k, t, skip = classify("动画表情", "<msg><emoji/></msg>")
+    check("表情给占位", k == "emoji" and "表情" in t, t)
+
+    k, t, skip = classify("系统消息", "x@chatroom:\n<sysmsg>修改群名</sysmsg>")
+    check("系统消息被忽略", skip)
+
+    poke = ('<msg><appmsg><title>"射电望远镜" 拍了拍 "蓝色大肥鱼"</title>'
+            "<type>62</type></appmsg></msg>")
+    k, t, skip = classify("文件/链接/卡片", poke)
+    check("拍一拍可读化", k == "card" and "拍了拍" in t and "<" not in t, t)
+    check("is_poke 判对", is_poke(poke))
+
+    link = "<msg><appmsg><title>某个链接标题</title></appmsg></msg>"
+    k, t, skip = classify("文件/链接/卡片", link)
+    check("卡片抠出标题", "某个链接标题" in t and "<" not in t, t)
+
+    k, t, skip = classify("文件/链接/卡片", "<msg><appmsg><des>无标题</des></appmsg></msg>")
+    check("无标题卡片不含 XML 原文", k == "card" and "<msg" not in t, t)
+
+    k, t, skip = classify("某个没见过的新类型", "<xml><a>1</a></xml>")
+    check("未知类型不含 XML 原文", "<xml" not in t, t)
+
+    check("XML 实体反转义", extract_title("<title>a &amp; b &lt;c&gt;</title>") == "a & b <c>")
+
+
 def test_config():
     print("\n== 配置加载与校验 ==")
     with tempfile.TemporaryDirectory() as d:
@@ -269,6 +308,7 @@ def main() -> int:
     test_context()
     test_image_tracker()
     test_vision_helpers()
+    test_message_classify()
     test_ratelimit()
     test_config()
     print("\n" + "=" * 50)

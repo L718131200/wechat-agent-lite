@@ -40,25 +40,15 @@ from .context import ContextStore
 from .logger import get_logger
 from .ratelimit import RateLimiter
 from .sender import Sender
-from .vision import EMOJI_TYPES, IMAGE_TYPES, ImageFetcher
+from .messages import classify, strip_sender_prefix
+from .vision import ImageFetcher
 
 log = get_logger("listener")
 
 SELF_SENDER_ID = 2           # 实测：sender_id == 2 即本机账号自己
-TEXT_TYPES = {"文本", "text"}
-
-# 群聊内容前缀：wxid_xxx:\n正文
-_PREFIX_RE = re.compile(r"^(?:wxid_[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]{6,})[:：]\s*\n?", re.S)
 
 # 消息里出现这些词，说明对方"明确在等一张图"，可以放宽接图额度
 _IMAGE_HINT = ("图", "照片", "截图", "看看这", "看这", "识图", "画", "拍")
-
-
-def strip_sender_prefix(content: str) -> str:
-    """剥掉群聊内容里的 `wxid_xxx:` 前缀。"""
-    if not content:
-        return ""
-    return _PREFIX_RE.sub("", content, count=1).strip()
 
 
 @dataclass
@@ -318,32 +308,35 @@ class Agent:
 
             mtype = str(msg.get("type") or "")
             raw = str(msg.get("content") or "")
-            is_image = mtype in IMAGE_TYPES
-            is_emoji = mtype in EMOJI_TYPES
 
-            # 消息里可能已经被 @ 过，先把前缀和 @ 都处理干净
-            text = strip_sender_prefix(raw)
-            at_hit, text_no_at = self._match_at(text)
+            # 把引擎的原始消息翻译成能读的文本：
+            # 卡片类只抠 <title>（实测那 24 条是"拍一拍"，content 是一整段 XML），
+            # 系统消息（改群名之类）直接丢掉。
+            kind, readable, skip = classify(mtype, raw)
+            if skip:
+                log.debug("忽略 %s 消息（系统类）", mtype)
+                return
 
             # 本次要送去识别的图片消息（可能来自本条，也可能是刚被 @ 关联到的上一条）
             image_msg = None
 
-            # ---------- 图片分支 ----------
-            if is_image:
+            if kind == "image":
+                # ---------- 图片：看这条图有没有对应的 @ 请求 ----------
                 if not self._handle_image(rt, msg):
                     return
                 image_msg = msg
                 text = ""                    # 图片没文字，内容交给识别结果
                 reason = "图片（命中该发送者的 @ 请求）"
-            # ---------- 表情 ----------
-            elif is_emoji:
-                text = "[对方发来一个表情]"
-                reason = "表情"
-                if rt.is_group and not at_hit:
+            else:
+                # ---------- 非图片：先判 @ / 关键词 / 私聊 ----------
+                text = readable
+                at_hit, text_no_at = self._match_at(text)
+
+                # 群里的表情/卡片/其它类型如果没 @ 机器人，一律不用理
+                if rt.is_group and not at_hit and kind != "text":
+                    log.debug("群 %s 的 %s 消息未 @ 机器人，忽略", rt.display, kind)
                     return
-            # ---------- 文本 ----------
-            elif mtype in TEXT_TYPES:
-                text = text_no_at if at_hit else text
+
                 if not rt.is_group:
                     if rt.target.mode() == "always":
                         reason = "私聊"
@@ -355,7 +348,8 @@ class Agent:
                 else:
                     kw = [k for k in rt.target.keyword if k and k in text]
                     if at_hit:
-                        # @ 了：登记等图（支持"先图后 @"时在下面取回）
+                        text = text_no_at
+                        # @ 了：登记等图（"先图后 @"的情况在下面取回）
                         self._open_pending(rt, msg, text)
                         reason = "@机器人"
                         recent = self._take_recent_image(rt, self.sender_key(msg))
@@ -370,11 +364,6 @@ class Agent:
                     else:
                         log.debug("群 %s 未命中 @/关键词（发送者 %s）", rt.display, self.sender_key(msg))
                         return
-            else:
-                if rt.is_group and not at_hit:
-                    return
-                text = "[%s] %s" % (mtype, text[:80])
-                reason = "其它类型"
 
             log.info("处理消息 chat=%s type=%s 触发=%s", rt.display, mtype, reason)
 

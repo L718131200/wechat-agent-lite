@@ -169,12 +169,112 @@ def run_vision_test(cfg) -> int:
     return 0
 
 
+class _DrySender:
+    """干跑用假发送器：只记录，绝不碰微信窗口。
+
+    存在的意义：可以在**不打扰正在运行的其它机器人**的前提下，
+    把整条业务链路（触发判定 → 上下文 → 模型 → 回复文本）跑一遍。
+    """
+
+    def __init__(self):
+        self.sent: list[tuple[str, str, str | None]] = []
+
+    def send(self, chat: str, text: str, at: str | None = None) -> bool:
+        self.sent.append((chat, text, at))
+        return True
+
+
+def run_simulate(cfg, chat: str, text: str | None, image_local_id: int | None) -> int:
+    """干跑：用一条构造消息走完整业务链路，但**不真的发微信**。
+
+    能验证：目标解析、触发判定（@ / 关键词 / 等图登记）、上下文拼装、
+    模型调用、图片下载 + 视觉识别。**不能**验证引擎的回调本身和 GUI 发送
+    ——那两件是引擎的职责，需要真机实跑。
+    """
+    print("\n=== 干跑（不会发送任何微信消息）===")
+    try:
+        from wechatauto.db import WeChatDB
+    except Exception as e:
+        print("  连不上引擎：%r" % (e,))
+        return 3
+
+    from .listener import Agent
+
+    db = WeChatDB()
+    agent = Agent(cfg, db)
+    agent.resolve_targets()
+
+    # 找到目标会话的 username（配置里写的是昵称）
+    if chat in agent.targets:
+        username = chat
+    else:
+        hits = db.search_contact(chat)
+        username = hits[0]["username"] if hits else chat
+    rt = agent.targets.get(username)
+    if rt is None:
+        print("  会话 %r 解析成 %r，但它不在 listen 配置里。当前目标：" % (chat, username))
+        for u, t in agent.targets.items():
+            print("      %s -> %s" % (t.display, u))
+        return 4
+
+    print("  目标会话：%s (%s, %s)" % (rt.display, rt.username, "群" if rt.is_group else "私聊"))
+
+    # 用数据库里真实的最近一条消息当模板，保证字段形状与线上一致
+    tpl = {}
+    try:
+        rows = db.get_messages(rt.username, limit=1)
+        tpl = rows[0] if rows else {}
+    except Exception as e:
+        print("  取模板消息失败（忽略）：%r" % e)
+
+    now = int(time.time())
+    if image_local_id is not None:
+        msg = {
+            "username": rt.username, "type": "图片", "content": "",
+            "sender_id": 1, "sender_username": "wxid_simulated_sender",
+            "local_id": int(image_local_id), "shard": tpl.get("shard"),
+            "create_time": now,
+        }
+        print("  模拟消息：图片 local_id=%s" % image_local_id)
+    else:
+        msg = {
+            "username": rt.username, "type": "文本", "content": text or "",
+            "sender_id": 1, "sender_username": "wxid_simulated_sender",
+            "local_id": 0, "shard": tpl.get("shard"),
+            "create_time": now,
+        }
+        print("  模拟消息：文本 %r" % (text or ""))
+
+    dry = _DrySender()
+    agent.sender = dry          # 换掉发送器：只记录，不动窗口
+
+    t0 = time.time()
+    agent.on_message(msg, None)
+    dt = time.time() - t0
+
+    print("\n  ---- 结果 ----")
+    print("  总耗时：%.2fs" % dt)
+    if dry.sent:
+        for i, (c, t, at) in enumerate(dry.sent, 1):
+            print("  将发送 %d/%d -> %s%s：" % (i, len(dry.sent), c, (" @ " + at) if at else ""))
+            print("      " + t.replace("\n", "\n      "))
+    else:
+        print("  没有产生回复（被触发判定或限流拦下 —— 看上面的日志行）")
+    print("\n  注意：以上内容**没有真的发出去**，只是干跑。")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="wechat_agent", description="微信 AI 机器人业务层")
     ap.add_argument("-c", "--config", default="config.yaml", help="配置文件路径（默认 config.yaml）")
     ap.add_argument("--check", action="store_true", help="只自检，不发任何消息")
     ap.add_argument("--test-vision", action="store_true",
                     help="拿数据库里最近一张真实图片跑一次「下载+识别」（不发消息）")
+    ap.add_argument("--simulate", metavar="会话名",
+                    help="干跑：把构造消息喂给业务链路，但**不真的发微信**（不停其它机器人也能用）")
+    ap.add_argument("--text", default="你好", help="配合 --simulate：模拟收到的文本")
+    ap.add_argument("--image-local-id", type=int, default=None,
+                    help="配合 --simulate：改成模拟收到一张图片（传数据库里的 local_id）")
     ap.add_argument("--version", action="version", version="wechat-agent-lite %s" % __version__)
     args = ap.parse_args(argv)
 
@@ -201,6 +301,8 @@ def main(argv=None) -> int:
         return run_check(cfg, log)
     if args.test_vision:
         return run_vision_test(cfg)
+    if args.simulate:
+        return run_simulate(cfg, args.simulate, args.text, args.image_local_id)
 
     # ---- 正式运行 ----
     try:

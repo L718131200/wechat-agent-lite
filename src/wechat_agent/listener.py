@@ -351,12 +351,19 @@ class Agent:
                         text = text_no_at
                         # @ 了：登记等图（"先图后 @"的情况在下面取回）
                         self._open_pending(rt, msg, text)
-                        reason = "@机器人"
                         recent = self._take_recent_image(rt, self.sender_key(msg))
                         if recent is not None and any(k in text for k in _IMAGE_HINT):
                             log.info("群 %s：@ 之前刚发过图，直接关联那张图", rt.display)
                             image_msg = recent
                             reason = "@机器人+紧随其后的图"
+                        elif any(k in text for k in _IMAGE_HINT):
+                            # "@机器人 看看这张图" —— 图还没到。
+                            # 这时候**不要抢答**"我没收到图片呢"，那只会多一条废话；
+                            # 登记等图后静静等，图到了再连同问题一起答。
+                            log.info("群 %s：@ 时提到图但尚未收到，先登记等图、本条不回复", rt.display)
+                            return
+                        else:
+                            reason = "@机器人"
                     elif kw:
                         reason = "关键词"
                     elif rt.target.mode() == "always":

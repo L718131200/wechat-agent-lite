@@ -38,6 +38,7 @@ from .brain import Model, ModelError
 from .config import AppConfig, ListenTarget
 from .context import ContextStore
 from .logger import get_logger
+from .ratelimit import RateLimiter
 from .sender import Sender
 from .vision import EMOJI_TYPES, IMAGE_TYPES, ImageFetcher
 
@@ -169,6 +170,8 @@ class Agent:
             budget=int(self.cfg.group.image_followup_budget),
         )
         self._robot_name = ""
+        # 限流 / 费用闸门：私聊配成 always 时，这是唯一的刹车
+        self.limiter = RateLimiter(self.cfg.limits)
 
     # ------------------------------------------------------------------ #
     # 会话解析：昵称 -> username
@@ -387,6 +390,12 @@ class Agent:
                 if random.randint(1, 100) > self.cfg.group.reply_probability:
                     log.info("群 %s 未通过回复概率 %d%%", rt.display, self.cfg.group.reply_probability)
                     return
+
+            # 限流闸门放在**调模型之前** —— 被拦下的消息不该产生任何 token 费用
+            allowed, why = self.limiter.allow(rt.username, self.sender_key(msg))
+            if not allowed:
+                log.warning("限流拦下一条（%s）：chat=%s sender=%s", why, rt.display, self.sender_key(msg))
+                return
 
             rt.ctx.add_user(user_line)
             messages = rt.ctx.build_messages(self.system_prompt)

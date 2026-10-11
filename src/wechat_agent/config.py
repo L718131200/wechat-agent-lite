@@ -16,6 +16,8 @@ from typing import Any, Literal
 
 import yaml
 
+from .ratelimit import LimitConfig
+
 ENV_LLM_KEY = "WAL_LLM_KEY"
 ENV_VISION_KEY = "WAL_VISION_KEY"
 
@@ -128,6 +130,7 @@ class AppConfig:
     send: SendConfig = field(default_factory=SendConfig)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    limits: LimitConfig = field(default_factory=LimitConfig)
     # 引擎相关
     listener_interval: float = 1.0
     # 配置来源，便于日志里说明
@@ -190,6 +193,7 @@ def load_config(path: str | Path) -> AppConfig:
         send=_build(SendConfig, raw.get("send"), "send"),
         persona=_build(PersonaConfig, raw.get("persona"), "persona"),
         log=_build(LogConfig, raw.get("log"), "log"),
+        limits=_build(LimitConfig, raw.get("limits"), "limits"),
         source_path=str(p.resolve()),
     )
 

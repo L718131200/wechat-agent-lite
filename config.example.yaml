@@ -73,6 +73,16 @@ send:
 persona:
   prompt_file: "./prompts/default.md"
 
+# ---------------- 限流与费用闸门 ----------------
+# 私聊配成 always 之后，任何能给这个号发消息的人都在花你的 API 额度 ——
+# 这四道闸是唯一的刹车。任何一项写 0 表示不限该项。
+limits:
+  enabled: true
+  per_user_per_minute: 6      # 同一个人每分钟最多回几条
+  per_chat_per_minute: 20     # 同一个群/会话每分钟最多几条（群被刷时保护）
+  daily_replies: 500          # 每天总共最多回几条（真正的费用闸门，跨天自动重置）
+  cooldown_seconds: 2         # 同一个人两条回复之间至少隔几秒
+
 # ---------------- 日志 ----------------
 log:
   level: "INFO"

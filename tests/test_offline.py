@@ -120,6 +120,56 @@ def test_image_tracker():
     check("另一个群不命中", tr6.consume("群2", "A", now=T0 + 1) is None)
 
 
+def test_ratelimit():
+    """限流四道闸的边界 —— 这是"别人刷你号烧你钱"的唯一刹车。"""
+    print("\n== 限流与费用闸门 ==")
+    from wechat_agent.ratelimit import LimitConfig, RateLimiter
+
+    T0 = 5000.0
+
+    # 1) 冷却
+    rl = RateLimiter(LimitConfig(per_user_per_minute=10, per_chat_per_minute=100,
+                                 daily_replies=100, cooldown_seconds=3))
+    check("首条放行", rl.allow("群", "A", now=T0)[0])
+    ok, why = rl.allow("群", "A", now=T0 + 1)
+    check("冷却期内拦下", (not ok) and ("冷却" in why), why)
+    check("冷却过后放行", rl.allow("群", "A", now=T0 + 4)[0])
+
+    # 2) 单用户每分钟
+    rl2 = RateLimiter(LimitConfig(per_user_per_minute=2, per_chat_per_minute=100,
+                                  daily_replies=100, cooldown_seconds=0))
+    check("用户第1条", rl2.allow("群", "A", now=T0)[0])
+    check("用户第2条", rl2.allow("群", "A", now=T0 + 1)[0])
+    ok2, why2 = rl2.allow("群", "A", now=T0 + 2)
+    check("用户第3条被拦", (not ok2) and ("每分钟" in why2), why2)
+    check("别的用户不受影响", rl2.allow("群", "B", now=T0 + 3)[0])
+    check("过一分钟恢复", rl2.allow("群", "A", now=T0 + 70)[0])
+
+    # 3) 单会话每分钟（群被刷时保护）
+    rl3 = RateLimiter(LimitConfig(per_user_per_minute=0, per_chat_per_minute=2,
+                                  daily_replies=100, cooldown_seconds=0))
+    check("群第1条", rl3.allow("群", "A", now=T0)[0])
+    check("群第2条", rl3.allow("群", "B", now=T0)[0])
+    ok3, why3 = rl3.allow("群", "C", now=T0)
+    check("群第3条被拦（会话级）", (not ok3) and ("会话" in why3), why3)
+    check("另一个群不受影响", rl3.allow("群2", "C", now=T0)[0])
+
+    # 4) 每日费用闸门 + 跨天重置
+    rl4 = RateLimiter(LimitConfig(per_user_per_minute=0, per_chat_per_minute=0,
+                                  daily_replies=2, cooldown_seconds=0))
+    check("日限第1条", rl4.allow("群", "A", now=T0)[0])
+    check("日限第2条", rl4.allow("群", "A", now=T0 + 1)[0])
+    ok4, why4 = rl4.allow("群", "A", now=T0 + 2)
+    check("日限拦下", (not ok4) and ("当日" in why4), why4)
+    check("跨天自动重置", rl4.allow("群", "A", now=T0 + 86400)[0])
+
+    # 5) 整体关闭
+    rl5 = RateLimiter(LimitConfig(enabled=False, daily_replies=1))
+    a1 = rl5.allow("群", "A", now=T0)[0]
+    a2 = rl5.allow("群", "A", now=T0)[0]
+    check("关闭后不拦", a1 and a2)
+
+
 def test_config():
     print("\n== 配置加载与校验 ==")
     with tempfile.TemporaryDirectory() as d:
@@ -178,6 +228,7 @@ def main() -> int:
     test_split()
     test_context()
     test_image_tracker()
+    test_ratelimit()
     test_config()
     print("\n" + "=" * 50)
     if FAILS:

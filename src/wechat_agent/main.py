@@ -38,6 +38,13 @@ def run_check(cfg, log) -> int:
         print("        - %-16s type=%-7s reply=%s" % (t.chat, t.type, t.mode()))
     print("      上下文上限：%d 字符 / %d 条" % (cfg.context.max_chars, cfg.context.max_messages))
     print("      分段上限：%d 段" % cfg.send.max_segments)
+    lim = cfg.limits
+    if lim.enabled:
+        print("      限流：每用户 %d/分，每会话 %d/分，每日 %d 条，冷却 %.1fs"
+              % (lim.per_user_per_minute, lim.per_chat_per_minute,
+                 lim.daily_replies, lim.cooldown_seconds))
+    else:
+        print("      限流：**已关闭** —— 私聊 always 模式下会持续消耗 API 额度")
     print("      模型：%s @ %s" % (cfg.llm.model, cfg.llm.base_url))
     print("      视觉：%s（%s）" % (cfg.vision.model, "开" if cfg.vision.enabled else "关"))
 

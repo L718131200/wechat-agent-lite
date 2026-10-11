@@ -57,8 +57,14 @@ class VisionConfig:
     max_tokens: int = 512
     prompt: str = "用中文简要描述这张图片的内容，一两句话即可。"
     max_image_mb: float = 8.0
+    # 小于这个体积的图片按表情/图标跳过（群里斗图不该拿去烧 token）。0 = 不过滤
+    min_image_kb: float = 20.0
+    # 视觉接口单独设超时：多模态推理明显比文本慢，复用文本超时会误杀
+    timeout: int = 90
     # 下载图片的落地目录
     save_dir: str = "./data/media"
+    # 本地图片保留小时数（0 = 不清理）。长期运行必须清，否则磁盘会被图片吃满
+    keep_hours: float = 24.0
 
     def resolved_base_url(self, llm: LLMConfig) -> str:
         return self.base_url or llm.base_url
@@ -84,7 +90,10 @@ class ListenTarget:
 @dataclass
 class GroupConfig:
     at_name: str = ""
-    at_image_followup_sec: int = 60
+    # 图片消息本身没有文字，永远不可能带 @。所以约定：
+    # 群里被 @ 之后的 N 秒内，**同一个人**单独发来的图片，按"续接"处理。
+    # 默认 30 秒：窗口越长，越容易把"下一个话题的图"错认成这次请求的续图。
+    at_image_followup_sec: int = 30
     reply_probability: int = 100
     # 群聊回复时是否 @ 发送者。默认关：at_member 需要的是群成员**昵称**，
     # 而回调给的是 wxid，换不到昵称就 @ 不出来（旧包实际也不 @）。

@@ -144,6 +144,22 @@ class ImageRequestTracker:
     def recent_count(self) -> int:
         return len(self._recent)
 
+    def sweep(self, now: float | None = None) -> int:
+        """清掉过期登记与过期的"最近图"缓存，返回清理条数。
+
+        7x24 跑下去，这两个 dict 会按 (群, 人) 缓慢增长；必须有人扫。
+        """
+        now = time.time() if now is None else now
+        n = 0
+        for k in [k for k, p in self._pending.items() if not p.alive(now)]:
+            self._pending.pop(k, None)
+            n += 1
+        for k, (ts, _msg) in list(self._recent.items()):
+            if now - ts > self.ttl:
+                self._recent.pop(k, None)
+                n += 1
+        return n
+
 
 @dataclass
 class ResolvedTarget:
@@ -292,6 +308,7 @@ class Agent:
     # ------------------------------------------------------------------ #
     def on_message(self, msg: dict, listener=None) -> None:
         try:
+            self.tracker.sweep()          # 顺带清理过期状态，防止长期运行缓慢膨胀
             if msg.get("sender_id") == SELF_SENDER_ID:
                 return                       # 自己发的，不回
             username = msg.get("username") or ""

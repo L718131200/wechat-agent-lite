@@ -119,6 +119,46 @@ def test_image_tracker():
     tr6.open("群1", "A", "看图", now=T0)
     check("另一个群不命中", tr6.consume("群2", "A", now=T0 + 1) is None)
 
+    # 7) sweep：长期运行时防止状态膨胀
+    tr7 = ImageRequestTracker(ttl=10, budget=2)
+    tr7.open("群", "A", "看图", now=T0)
+    tr7.note_image("群", "B", {"local_id": 9}, now=T0)
+    check("未过期不清理", tr7.sweep(now=T0 + 5) == 0)
+    check("过期后清理 2 条", tr7.sweep(now=T0 + 11) == 2)
+    check("清理后状态为空", tr7.pending_count() == 0 and tr7.recent_count() == 0)
+
+
+def test_vision_helpers():
+    """图片校验：微信落盘的图可能没有后缀、或后缀与实际格式不符。"""
+    print("\n== 图片格式校验（magic bytes）==")
+    import tempfile
+    from pathlib import Path
+
+    from wechat_agent.vision import sniff_image_mime
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        png = d / "a.dat"                      # 故意用错后缀
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        check("PNG 头识别", sniff_image_mime(png) == "image/png")
+
+        jpg = d / "b.bin"
+        jpg.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 64)
+        check("JPEG 头识别", sniff_image_mime(jpg) == "image/jpeg")
+
+        gif = d / "c"                          # 无后缀
+        gif.write_bytes(b"GIF89a" + b"\x00" * 64)
+        check("GIF 头识别（无后缀）", sniff_image_mime(gif) == "image/gif")
+
+        webp = d / "d.webp"
+        webp.write_bytes(b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 32)
+        check("WebP 头识别", sniff_image_mime(webp) == "image/webp")
+
+        txt = d / "e.txt"
+        txt.write_bytes(b"hello world" * 8)
+        check("非图片返回 None", sniff_image_mime(txt) is None)
+        check("文件不存在返回 None", sniff_image_mime(d / "nope") is None)
+
 
 def test_ratelimit():
     """限流四道闸的边界 —— 这是"别人刷你号烧你钱"的唯一刹车。"""
@@ -228,6 +268,7 @@ def main() -> int:
     test_split()
     test_context()
     test_image_tracker()
+    test_vision_helpers()
     test_ratelimit()
     test_config()
     print("\n" + "=" * 50)

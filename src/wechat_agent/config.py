@@ -16,8 +16,6 @@ from typing import Any, Literal
 
 import yaml
 
-from .ratelimit import LimitConfig
-
 ENV_LLM_KEY = "WAL_LLM_KEY"
 ENV_VISION_KEY = "WAL_VISION_KEY"
 
@@ -57,14 +55,8 @@ class VisionConfig:
     max_tokens: int = 512
     prompt: str = "用中文简要描述这张图片的内容，一两句话即可。"
     max_image_mb: float = 8.0
-    # 小于这个体积的图片按表情/图标跳过（群里斗图不该拿去烧 token）。0 = 不过滤
-    min_image_kb: float = 20.0
-    # 视觉接口单独设超时：多模态推理明显比文本慢，复用文本超时会误杀
-    timeout: int = 90
     # 下载图片的落地目录
     save_dir: str = "./data/media"
-    # 本地图片保留小时数（0 = 不清理）。长期运行必须清，否则磁盘会被图片吃满
-    keep_hours: float = 24.0
 
     def resolved_base_url(self, llm: LLMConfig) -> str:
         return self.base_url or llm.base_url
@@ -90,10 +82,7 @@ class ListenTarget:
 @dataclass
 class GroupConfig:
     at_name: str = ""
-    # 图片消息本身没有文字，永远不可能带 @。所以约定：
-    # 群里被 @ 之后的 N 秒内，**同一个人**单独发来的图片，按"续接"处理。
-    # 默认 30 秒：窗口越长，越容易把"下一个话题的图"错认成这次请求的续图。
-    at_image_followup_sec: int = 30
+    at_image_followup_sec: int = 60
     reply_probability: int = 100
     # 群聊回复时是否 @ 发送者。默认关：at_member 需要的是群成员**昵称**，
     # 而回调给的是 wxid，换不到昵称就 @ 不出来（旧包实际也不 @）。
@@ -139,13 +128,8 @@ class AppConfig:
     send: SendConfig = field(default_factory=SendConfig)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     log: LogConfig = field(default_factory=LogConfig)
-    limits: LimitConfig = field(default_factory=LimitConfig)
     # 引擎相关
     listener_interval: float = 1.0
-    # 启动前多少秒以内的消息还算"新消息"。
-    # 引擎水位文件若存着旧水位，首次轮询会把整段历史当新消息推过来（实测一次 18 条），
-    # 超过这个宽限期的直接丢弃。设 0 表示不丢弃（会把历史也当新消息处理）。
-    startup_grace_sec: float = 120.0
     # 配置来源，便于日志里说明
     source_path: str = ""
 
@@ -206,7 +190,6 @@ def load_config(path: str | Path) -> AppConfig:
         send=_build(SendConfig, raw.get("send"), "send"),
         persona=_build(PersonaConfig, raw.get("persona"), "persona"),
         log=_build(LogConfig, raw.get("log"), "log"),
-        limits=_build(LimitConfig, raw.get("limits"), "limits"),
         source_path=str(p.resolve()),
     )
 
@@ -218,11 +201,9 @@ def load_config(path: str | Path) -> AppConfig:
     for i, item in enumerate(listens):
         cfg.listen.append(_build(ListenTarget, item, "listen[%d]" % i))
 
-    # listener_interval / startup_grace_sec 顶格，不走 dataclass 默认值那条路
+    # listener_interval 顶格
     if "listener_interval" in raw:
         cfg.listener_interval = float(raw["listener_interval"])
-    if "startup_grace_sec" in raw:
-        cfg.startup_grace_sec = float(raw["startup_grace_sec"])
 
     _validate(cfg)
     return cfg

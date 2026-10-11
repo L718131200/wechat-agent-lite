@@ -125,8 +125,7 @@ class Model:
             r = requests.post(url, headers={
                 "Authorization": "Bearer " + key,
                 "Content-Type": "application/json",
-            }, data=json.dumps(payload).encode("utf-8"),
-                timeout=v.timeout or self.cfg.llm.timeout)   # 视觉单独超时
+            }, data=json.dumps(payload).encode("utf-8"), timeout=self.cfg.llm.timeout)
         except Exception as e:
             raise ModelError("视觉请求失败: %r" % (e,)) from e
         dt = time.time() - t0

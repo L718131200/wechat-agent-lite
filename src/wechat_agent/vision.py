@@ -23,32 +23,6 @@ log = get_logger("vision")
 IMAGE_TYPES = {"图片", "image"}
 EMOJI_TYPES = {"动画表情", "表情", "emotion"}
 
-# 按文件头判断真实格式 —— 微信落盘的图有可能没后缀、或后缀与实际不符
-# （实测踩过：把 webp 存成 .dat 解出来的临时文件）。只按扩展名会给接口送错 MIME，
-# 部分 OpenAI 兼容端点直接 400。
-_MAGIC = (
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
-    (b"BM", "image/bmp"),
-)
-
-
-def sniff_image_mime(path: str | Path) -> str | None:
-    """按 magic bytes 返回真实 MIME，认不出来返回 None。"""
-    try:
-        with open(path, "rb") as f:
-            head = f.read(16)
-    except OSError:
-        return None
-    for magic, mime in _MAGIC:
-        if head.startswith(magic):
-            return mime
-    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
-        return "image/webp"
-    return None
-
 
 class ImageFetcher:
     """把图片消息落盘。延迟导入引擎，方便离线自测。"""
@@ -88,52 +62,8 @@ class ImageFetcher:
         if not path:
             log.warning("图片下载返回空 user=%s local_id=%s（本机可能只有缩略图或尚未落盘）", user, local_id)
             return None
-
-        # 路径存在 ≠ 文件写完了。这里做三层校验，避免把半个文件或表情包送去识别。
-        p = Path(path)
-        if not p.exists():
+        if not Path(path).exists():
             log.warning("图片路径不存在：%s", path)
             return None
-        size = p.stat().st_size
-        if size <= 0:
-            log.warning("图片文件是空的：%s", p)
-            return None
-        min_kb = float(getattr(self.cfg.vision, "min_image_kb", 0) or 0)
-        if min_kb > 0 and size < min_kb * 1024:
-            # 表情包/图标也是"图片"，群里斗图时不该拿去烧 token
-            log.info("图片只有 %.1f KB（<%g KB），按表情/图标跳过：%s",
-                     size / 1024.0, min_kb, p.name)
-            return None
-        mime = sniff_image_mime(p)
-        if mime is None:
-            log.warning("文件头不是可识别的图片格式，跳过：%s", p)
-            return None
-        log.info("图片已落盘 %s (%.1f KB, %s)", p.name, size / 1024.0, mime)
-        self._sweep_files()               # 顺手回收过期图片，防止磁盘被吃满
-        return str(p)
-
-    # ------------------------------------------------------------------ #
-    def _sweep_files(self, now: float | None = None) -> int:
-        """删掉超过 keep_hours 的本地图片。返回删除数。
-
-        长期运行时这一步是必须的：每张图 100KB 上下，群里聊一天就能攒出几百 MB。
-        """
-        keep = float(getattr(self.cfg.vision, "keep_hours", 0) or 0)
-        if keep <= 0:
-            return 0
-        import time as _t
-        cutoff = (_t.time() if now is None else now) - keep * 3600
-        n = 0
-        try:
-            for f in self.save_dir.iterdir():
-                try:
-                    if f.is_file() and f.stat().st_mtime < cutoff:
-                        f.unlink()
-                        n += 1
-                except OSError:
-                    continue
-        except OSError:
-            return n
-        if n:
-            log.info("清理了 %d 张超过 %g 小时的本地图片", n, keep)
-        return n
+        log.info("图片已落盘 %s (%.1f KB)", Path(path).name, Path(path).stat().st_size / 1024)
+        return str(path)

@@ -38,17 +38,26 @@ from .brain import Model, ModelError
 from .config import AppConfig, ListenTarget
 from .context import ContextStore
 from .logger import get_logger
-from .ratelimit import RateLimiter
 from .sender import Sender
-from .messages import classify, is_stale, strip_sender_prefix
-from .vision import ImageFetcher
+from .vision import EMOJI_TYPES, IMAGE_TYPES, ImageFetcher
 
 log = get_logger("listener")
 
 SELF_SENDER_ID = 2           # 实测：sender_id == 2 即本机账号自己
+TEXT_TYPES = {"文本", "text"}
+
+# 群聊内容前缀：wxid_xxx:\n正文
+_PREFIX_RE = re.compile(r"^(?:wxid_[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]{6,})[:：]\s*\n?", re.S)
 
 # 消息里出现这些词，说明对方"明确在等一张图"，可以放宽接图额度
 _IMAGE_HINT = ("图", "照片", "截图", "看看这", "看这", "识图", "画", "拍")
+
+
+def strip_sender_prefix(content: str) -> str:
+    """剥掉群聊内容里的 `wxid_xxx:` 前缀。"""
+    if not content:
+        return ""
+    return _PREFIX_RE.sub("", content, count=1).strip()
 
 
 @dataclass
@@ -134,22 +143,6 @@ class ImageRequestTracker:
     def recent_count(self) -> int:
         return len(self._recent)
 
-    def sweep(self, now: float | None = None) -> int:
-        """清掉过期登记与过期的"最近图"缓存，返回清理条数。
-
-        7x24 跑下去，这两个 dict 会按 (群, 人) 缓慢增长；必须有人扫。
-        """
-        now = time.time() if now is None else now
-        n = 0
-        for k in [k for k, p in self._pending.items() if not p.alive(now)]:
-            self._pending.pop(k, None)
-            n += 1
-        for k, (ts, _msg) in list(self._recent.items()):
-            if now - ts > self.ttl:
-                self._recent.pop(k, None)
-                n += 1
-        return n
-
 
 @dataclass
 class ResolvedTarget:
@@ -176,13 +169,6 @@ class Agent:
             budget=int(self.cfg.group.image_followup_budget),
         )
         self._robot_name = ""
-        # 限流 / 费用闸门：私聊配成 always 时，这是唯一的刹车
-        self.limiter = RateLimiter(self.cfg.limits)
-        # 进程启动时刻：用来丢弃"启动之前"的历史消息。
-        # 实测踩到过：引擎的水位文件里若存着旧水位（换机器、删过文件、或文件是
-        # 别的进程留下的），首次轮询会把一整段历史当新消息推过来 —— 实测一次推了
-        # 18 条。那些不该回。
-        self.started_at = time.time()
 
     # ------------------------------------------------------------------ #
     # 会话解析：昵称 -> username
@@ -303,7 +289,6 @@ class Agent:
     # ------------------------------------------------------------------ #
     def on_message(self, msg: dict, listener=None) -> None:
         try:
-            self.tracker.sweep()          # 顺带清理过期状态，防止长期运行缓慢膨胀
             if msg.get("sender_id") == SELF_SENDER_ID:
                 return                       # 自己发的，不回
             username = msg.get("username") or ""
@@ -311,43 +296,34 @@ class Agent:
             if rt is None:
                 return                       # 不在配置里
 
-            # 丢弃"启动之前"的历史消息（见 __init__ 里 started_at 的说明）。
-            # 正常运行时消息的 create_time 就是刚刚，宽限期内不会误杀。
-            if is_stale(msg.get("create_time"), self.started_at, self.cfg.startup_grace_sec):
-                log.debug("跳过启动前的历史消息：%s", str(msg.get("content"))[:40])
-                return
-
             mtype = str(msg.get("type") or "")
             raw = str(msg.get("content") or "")
+            is_image = mtype in IMAGE_TYPES
+            is_emoji = mtype in EMOJI_TYPES
 
-            # 把引擎的原始消息翻译成能读的文本：
-            # 卡片类只抠 <title>（实测那 24 条是"拍一拍"，content 是一整段 XML），
-            # 系统消息（改群名之类）直接丢掉。
-            kind, readable, skip = classify(mtype, raw)
-            if skip:
-                log.debug("忽略 %s 消息（系统类）", mtype)
-                return
+            # 消息里可能已经被 @ 过，先把前缀和 @ 都处理干净
+            text = strip_sender_prefix(raw)
+            at_hit, text_no_at = self._match_at(text)
 
             # 本次要送去识别的图片消息（可能来自本条，也可能是刚被 @ 关联到的上一条）
             image_msg = None
 
-            if kind == "image":
-                # ---------- 图片：看这条图有没有对应的 @ 请求 ----------
+            # ---------- 图片分支 ----------
+            if is_image:
                 if not self._handle_image(rt, msg):
                     return
                 image_msg = msg
                 text = ""                    # 图片没文字，内容交给识别结果
                 reason = "图片（命中该发送者的 @ 请求）"
-            else:
-                # ---------- 非图片：先判 @ / 关键词 / 私聊 ----------
-                text = readable
-                at_hit, text_no_at = self._match_at(text)
-
-                # 群里的表情/卡片/其它类型如果没 @ 机器人，一律不用理
-                if rt.is_group and not at_hit and kind != "text":
-                    log.debug("群 %s 的 %s 消息未 @ 机器人，忽略", rt.display, kind)
+            # ---------- 表情 ----------
+            elif is_emoji:
+                text = "[对方发来一个表情]"
+                reason = "表情"
+                if rt.is_group and not at_hit:
                     return
-
+            # ---------- 文本 ----------
+            elif mtype in TEXT_TYPES:
+                text = text_no_at if at_hit else text
                 if not rt.is_group:
                     if rt.target.mode() == "always":
                         reason = "私聊"
@@ -359,22 +335,14 @@ class Agent:
                 else:
                     kw = [k for k in rt.target.keyword if k and k in text]
                     if at_hit:
-                        text = text_no_at
-                        # @ 了：登记等图（"先图后 @"的情况在下面取回）
+                        # @ 了：登记等图（支持"先图后 @"时在下面取回）
                         self._open_pending(rt, msg, text)
+                        reason = "@机器人"
                         recent = self._take_recent_image(rt, self.sender_key(msg))
                         if recent is not None and any(k in text for k in _IMAGE_HINT):
                             log.info("群 %s：@ 之前刚发过图，直接关联那张图", rt.display)
                             image_msg = recent
                             reason = "@机器人+紧随其后的图"
-                        elif any(k in text for k in _IMAGE_HINT):
-                            # "@机器人 看看这张图" —— 图还没到。
-                            # 这时候**不要抢答**"我没收到图片呢"，那只会多一条废话；
-                            # 登记等图后静静等，图到了再连同问题一起答。
-                            log.info("群 %s：@ 时提到图但尚未收到，先登记等图、本条不回复", rt.display)
-                            return
-                        else:
-                            reason = "@机器人"
                     elif kw:
                         reason = "关键词"
                     elif rt.target.mode() == "always":
@@ -382,6 +350,11 @@ class Agent:
                     else:
                         log.debug("群 %s 未命中 @/关键词（发送者 %s）", rt.display, self.sender_key(msg))
                         return
+            else:
+                if rt.is_group and not at_hit:
+                    return
+                text = "[%s] %s" % (mtype, text[:80])
+                reason = "其它类型"
 
             log.info("处理消息 chat=%s type=%s 触发=%s", rt.display, mtype, reason)
 
@@ -414,12 +387,6 @@ class Agent:
                 if random.randint(1, 100) > self.cfg.group.reply_probability:
                     log.info("群 %s 未通过回复概率 %d%%", rt.display, self.cfg.group.reply_probability)
                     return
-
-            # 限流闸门放在**调模型之前** —— 被拦下的消息不该产生任何 token 费用
-            allowed, why = self.limiter.allow(rt.username, self.sender_key(msg))
-            if not allowed:
-                log.warning("限流拦下一条（%s）：chat=%s sender=%s", why, rt.display, self.sender_key(msg))
-                return
 
             rt.ctx.add_user(user_line)
             messages = rt.ctx.build_messages(self.system_prompt)

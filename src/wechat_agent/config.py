@@ -142,6 +142,10 @@ class AppConfig:
     limits: LimitConfig = field(default_factory=LimitConfig)
     # 引擎相关
     listener_interval: float = 1.0
+    # 启动前多少秒以内的消息还算"新消息"。
+    # 引擎水位文件若存着旧水位，首次轮询会把整段历史当新消息推过来（实测一次 18 条），
+    # 超过这个宽限期的直接丢弃。设 0 表示不丢弃（会把历史也当新消息处理）。
+    startup_grace_sec: float = 120.0
     # 配置来源，便于日志里说明
     source_path: str = ""
 
@@ -214,9 +218,11 @@ def load_config(path: str | Path) -> AppConfig:
     for i, item in enumerate(listens):
         cfg.listen.append(_build(ListenTarget, item, "listen[%d]" % i))
 
-    # listener_interval 顶格
+    # listener_interval / startup_grace_sec 顶格，不走 dataclass 默认值那条路
     if "listener_interval" in raw:
         cfg.listener_interval = float(raw["listener_interval"])
+    if "startup_grace_sec" in raw:
+        cfg.startup_grace_sec = float(raw["startup_grace_sec"])
 
     _validate(cfg)
     return cfg

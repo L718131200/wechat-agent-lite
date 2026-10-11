@@ -68,6 +68,21 @@ def is_poke(xml: str) -> bool:
     return "拍了拍" in (xml or "")
 
 
+def is_stale(create_time, started_at: float, grace_sec: float) -> bool:
+    """这条消息是不是"启动之前"的历史？
+
+    实测踩到过：引擎的水位文件若存着旧水位（换机器、删过文件，或文件是别的进程
+    留下的），首次轮询会把一整段历史当新消息推过来 —— 一次推了 18 条。那些不该回。
+    正常运行时消息的 create_time 就是刚刚，宽限期内不会误判。
+    """
+    if not create_time:
+        return False
+    try:
+        return (started_at - float(create_time)) > float(grace_sec)
+    except (TypeError, ValueError):
+        return False
+
+
 def classify(mtype: str, content: str) -> tuple[str, str, bool]:
     """把原始消息翻译成 (类别, 可读文本, 是否应当忽略)。
 

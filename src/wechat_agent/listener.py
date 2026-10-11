@@ -40,7 +40,7 @@ from .context import ContextStore
 from .logger import get_logger
 from .ratelimit import RateLimiter
 from .sender import Sender
-from .messages import classify, strip_sender_prefix
+from .messages import classify, is_stale, strip_sender_prefix
 from .vision import ImageFetcher
 
 log = get_logger("listener")
@@ -178,6 +178,11 @@ class Agent:
         self._robot_name = ""
         # 限流 / 费用闸门：私聊配成 always 时，这是唯一的刹车
         self.limiter = RateLimiter(self.cfg.limits)
+        # 进程启动时刻：用来丢弃"启动之前"的历史消息。
+        # 实测踩到过：引擎的水位文件里若存着旧水位（换机器、删过文件、或文件是
+        # 别的进程留下的），首次轮询会把一整段历史当新消息推过来 —— 实测一次推了
+        # 18 条。那些不该回。
+        self.started_at = time.time()
 
     # ------------------------------------------------------------------ #
     # 会话解析：昵称 -> username
@@ -305,6 +310,12 @@ class Agent:
             rt = self.targets.get(username)
             if rt is None:
                 return                       # 不在配置里
+
+            # 丢弃"启动之前"的历史消息（见 __init__ 里 started_at 的说明）。
+            # 正常运行时消息的 create_time 就是刚刚，宽限期内不会误杀。
+            if is_stale(msg.get("create_time"), self.started_at, self.cfg.startup_grace_sec):
+                log.debug("跳过启动前的历史消息：%s", str(msg.get("content"))[:40])
+                return
 
             mtype = str(msg.get("type") or "")
             raw = str(msg.get("content") or "")

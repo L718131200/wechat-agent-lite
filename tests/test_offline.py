@@ -249,6 +249,21 @@ def test_message_classify():
     check("XML 实体反转义", extract_title("<title>a &amp; b &lt;c&gt;</title>") == "a & b <c>")
 
 
+def test_is_stale():
+    """启动前的历史消息要丢掉 —— 实测踩到过，一次被推了 18 条历史。"""
+    print("\n== 启动前历史消息过滤 ==")
+    from wechat_agent.messages import is_stale
+
+    T = 1_000_000.0
+    check("刚到的不算旧", not is_stale(T - 5, T, 120))
+    check("宽限期内不算旧", not is_stale(T - 119, T, 120))
+    check("超过宽限期算旧", is_stale(T - 121, T, 120))
+    check("很久以前算旧", is_stale(T - 86400, T, 120))
+    check("无时间戳不判旧", not is_stale(None, T, 120))
+    check("宽限 0 时只剩当下", is_stale(T - 1, T, 0))
+    check("脏数据不崩", not is_stale("abc", T, 120))
+
+
 def test_config():
     print("\n== 配置加载与校验 ==")
     with tempfile.TemporaryDirectory() as d:
@@ -309,6 +324,7 @@ def main() -> int:
     test_image_tracker()
     test_vision_helpers()
     test_message_classify()
+    test_is_stale()
     test_ratelimit()
     test_config()
     print("\n" + "=" * 50)

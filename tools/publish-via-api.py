@@ -141,13 +141,14 @@ if st not in (200, 201):
 say("tree sha = %s" % tree["sha"][:12])
 
 # ---------- 5. commit ----------
-msg = ("初始发布：wechat-agent-lite 微信 AI 机器人业务层\n\n"
-       "自研业务层，替换旧包 wechatbot-new 的上层；收发与 UI 操作仍由\n"
-       "wechatauto-replica（Apache-2.0，pip 依赖，不含其源码）承担。\n\n"
-       "真机实测（VMware + 微信 4.1.15 + Python 3.11）：\n"
-       "- 群 @ 文本 0.97s / 私聊 0.86s / @+图片(下载+识别+回复) 2.54s（业务层）\n"
-       "- 端到端（含引擎 UI 发送）约 3-4 秒；旧包同场景约 28 秒\n"
-       "- 78 项离线测试；隐私路径（他人图片不会被上传）有专门测试覆盖\n")
+# 用本地最新提交的信息，不要写死 —— 这样远端每次同步都能跟本地历史对上。
+_r = subprocess.run(["git", "log", "-1", "--format=%s%n%n%b"], cwd=REPO_DIR,
+                    capture_output=True, timeout=60)
+msg = (_r.stdout or b"").decode("utf-8", "replace").strip()
+if not msg:
+    msg = "同步 wechat-agent-lite 最新内容"
+msg += "\n\n（本提交由 tools/publish-via-api.py 经 REST API 推送：本机 github.com 被指向本地反代，"
+msg += "不得借道，故不走 git push。本地完整 git 历史保留在仓库的 .git 中。）"
 st, commit = api("POST", "/repos/%s/%s/git/commits" % (owner, REPO_NAME), {
     "message": msg, "tree": tree["sha"], "parents": parents,
 })

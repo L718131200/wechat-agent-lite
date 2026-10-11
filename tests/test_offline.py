@@ -264,6 +264,51 @@ def test_is_stale():
     check("脏数据不崩", not is_stale("abc", T, 120))
 
 
+def test_example_config_matches_code():
+    """示例配置里出现的每个字段，代码都必须真的认。
+
+    这个测试防的是一种很坑的情况：示例里写了 `foo_bar: 1`，但 dataclass 里
+    没有这个字段 —— 用户照着改了半天，程序却完全不理会（甚至因为严格校验
+    直接报错）。反过来，代码新增了配置项却忘了写进示例，用户就永远不知道它存在。
+    """
+    print("\n== 示例配置与代码字段是否对齐 ==")
+    import dataclasses
+    from pathlib import Path
+
+    import yaml
+
+    from wechat_agent.config import AppConfig, GroupConfig, LimitConfig
+
+    root = Path(__file__).resolve().parent.parent
+    raw = yaml.safe_load((root / "config.example.yaml").read_text(encoding="utf-8"))
+
+    app_fields = {f.name for f in dataclasses.fields(AppConfig)}
+
+    # 顶层键必须在 AppConfig 里
+    unknown = [k for k in raw if k not in app_fields]
+    check("示例配置顶层键都被识别", not unknown, "多余的键：%s" % unknown)
+
+    # 嵌套段同理
+    def seg(name, cls):
+        got = set((raw.get(name) or {}).keys())
+        ok = {f.name for f in dataclasses.fields(cls)}
+        bad = got - ok
+        check("%s 段字段都被识别" % name, not bad, "多余的字段：%s" % bad)
+
+    seg("group", GroupConfig)
+    seg("limits", LimitConfig)
+
+    # 反向：几个关键字段必须出现在示例里，否则用户不知道能调
+    must = ["listen", "llm", "vision", "group", "context", "send", "limits", "log"]
+    missing = [k for k in must if k not in raw]
+    check("关键段落都写进了示例", not missing, "缺：%s" % missing)
+
+    lim = raw.get("limits") or {}
+    check("限流段落含每日闸门", "daily_replies" in lim)
+    grp = raw.get("group") or {}
+    check("群聊段落含接图窗口", "at_image_followup_sec" in grp)
+
+
 def test_config():
     print("\n== 配置加载与校验 ==")
     with tempfile.TemporaryDirectory() as d:
@@ -326,6 +371,7 @@ def main() -> int:
     test_message_classify()
     test_is_stale()
     test_ratelimit()
+    test_example_config_matches_code()
     test_config()
     print("\n" + "=" * 50)
     if FAILS:

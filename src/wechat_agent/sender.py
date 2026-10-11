@@ -6,6 +6,18 @@
   * max_segments 默认 1（不拆），要拆也有硬上限；
   * verify 默认 False —— 引擎的发送校验很贵，日常不需要；
   * 串行发送（引擎的 UI 操作必须串行，否则会互相抢窗口）。
+
+**关于引擎的两个实测行为（2026-10-11 在真机上量出来的）**：
+
+1. **引擎自带"拟人节流"**（`rhythm.py`）：120 秒内最多写 6 次，超了会强制冷却
+   30 秒以上，每次写入前还有 1-4 秒随机等待。这是**防风控设计，不是 bug**，
+   但意味着发送频率有天花板 —— 别指望它当广播用。
+
+2. **`click_send()` 的返回值不可靠**：实测它返回 False 时消息其实已经发出去了。
+   引擎若不信任这个返回值就可能重发，真机上看到过同一条消息出现两次。
+   而窗口被遮挡时情况更糟：输入框探测会连续失败 → 自动重校准 → `find_session`
+   一次能耗掉 100 秒以上。**所以发送前先 ensure_visible()** 是必须的：
+   它花 1 秒多，但能避免后面那一串灾难。
 """
 from __future__ import annotations
 
@@ -67,6 +79,12 @@ class Sender:
         ok = True
         with _send_lock:
             gui = self._ensure_gui()
+            # 先确保微信窗口可见可操作。实测不做这一步时，窗口被遮挡会导致
+            # 输入框探测失败 → 自动重校准 → find_session 耗 100 秒以上 → 重试后可能重复发送。
+            try:
+                gui.ensure_visible()
+            except Exception as e:
+                log.debug("ensure_visible 失败（继续尝试发送）：%r", e)
             for i, seg in enumerate(segs, 1):
                 t0 = time.time()
                 try:

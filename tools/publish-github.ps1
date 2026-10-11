@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     一键把 wechat-agent-lite 发布到 GitHub。
 
@@ -108,8 +108,15 @@ if ($exists) {
 $remote = "ssh://git@ssh.github.com:443/$owner/$RepoName.git"
 Push-Location $repoRoot
 try {
-    git remote remove origin 2>$null
-    git remote add origin $remote
+    # PowerShell 5.1 会把原生命令写到 stderr 的内容当成错误，配合
+    # $ErrorActionPreference="Stop" 会直接中断脚本。"还没有 origin" 是正常情况，
+    # 所以这里临时降级错误策略，只按退出码判断。
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        git remote remove origin 2>&1 | Out-Null
+        git remote add origin $remote 2>&1 | Out-Null
+    } finally { $ErrorActionPreference = $prev }
     # github.com 解析不通 + 中文用户名会让 Git 自带 ssh 编成 GBK，所以指定系统 ssh
     git config core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe -i $($keyPath -replace '\\','/') -o IdentitiesOnly=yes -o UserKnownHostsFile=$($KeyDir -replace '\\','/')/known_hosts"
     Ok "remote 已配置: $remote"
@@ -119,8 +126,13 @@ try {
         Warn "DryRun：跳过推送。确认无误后去掉 -DryRun 再跑一次。"
     } else {
         Info "正在推送（首次会提示确认主机指纹，本机已用 known_hosts 固定）…"
-        git push -u origin main 2>&1 | ForEach-Object { "    $_" }
-        if ($LASTEXITCODE -ne 0) { throw "推送失败（看上面的 git 输出）" }
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"      # git 的进度与提示都走 stderr
+        try {
+            git push -u origin main 2>&1 | ForEach-Object { "    $_" }
+            $code = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $prev }
+        if ($code -ne 0) { throw "推送失败（exit $code，看上面的 git 输出）" }
         Ok "推送完成"
     }
 } finally { Pop-Location }

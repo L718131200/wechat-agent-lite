@@ -1,0 +1,107 @@
+# ============================================================================
+#  wechat-agent-lite 配置示例
+#  用法：复制成 config.yaml，改完直接跑。程序只读这个文件，不会回写。
+#  （对比：旧的 wechatbot-new 用网页控制台改配置，点一次"保存"就会整体
+#    重写 config.py，曾把监听名单清空。这里从设计上就不给这个可能性。）
+# ============================================================================
+
+# ---------------- 对话模型（主 LLM）----------------
+llm:
+  # 任何 OpenAI 兼容端点都行：DeepSeek / 硅基流动 / 自建网关 ...
+  base_url: "https://api.deepseek.com"
+  # 推荐用环境变量 WAL_LLM_KEY 传，不要把明文 key 提交进 git
+  api_key: ""
+  model: "deepseek-chat"
+  temperature: 0.8
+  max_tokens: 1024
+  timeout: 60
+  # 关闭思考模式以降延迟。DeepSeek 官方接口认这个参数（thinking.type=disabled），
+  # 第三方网关可能不认 —— 所以默认 false，确认你的端点支持再打开。
+  disable_thinking: false
+
+# ---------------- 视觉（图片识别）----------------
+vision:
+  enabled: true
+  # 留空则复用 llm 的 base_url / api_key
+  base_url: ""
+  api_key: ""
+  # ⚠️ 不要用「推理模式」的模型名做识图：实测 deepseek-flash 会把 max_tokens
+  #    全部烧在 reasoning_tokens 上，content 返回空字符串，而且不报错。
+  model: "deepseek-chat"
+  temperature: 0.3
+  max_tokens: 512
+  prompt: "用中文简要描述这张图片的内容，一两句话即可。"
+  max_image_mb: 8
+  # 小于这个体积的图片按表情/图标跳过 —— 群里斗图时不该拿去烧 token
+  min_image_kb: 20
+  # 视觉接口单独超时：多模态推理明显比文本慢，复用文本超时会误杀
+  timeout: 90
+  # 图片落地目录与保留时长（0 = 不清理）。长期跑必须清，否则磁盘会被吃满
+  save_dir: "./data/media"
+  keep_hours: 24
+
+# ---------------- 监听哪些会话 ----------------
+listen:
+  - chat: "射电望远镜"        # 好友昵称（私聊）
+    type: private
+    reply: always             # always = 每条都回
+  - chat: "吊炸天"            # 群名
+    type: group
+    reply: at                 # at = 只在被 @ 时回
+    keyword: []               # 可选：命中这些词也回（留空 = 不用关键词）
+
+# ---------------- 群聊触发规则 ----------------
+group:
+  at_name: ""                 # 留空 = 自动读取本机微信昵称
+  # 图片消息本身没有文字，永远不可能带 @。所以约定：
+  # 群里被 @ 之后的 N 秒内、**同一个人**单独发来的图片，按"续接"处理。
+  # 窗口越长越容易把"下一个话题的图"错认成这次请求的续图，默认 30 秒。
+  at_image_followup_sec: 30
+  reply_probability: 100      # 被触发后回复的概率（100 = 必回）
+  # 群聊回复时是否 @ 发送者。默认 false —— at_member 要的是群成员昵称，
+  # 而回调里给的是 wxid，换不到昵称就 @ 不出来，所以默认不做这件事。
+  at_reply: false
+  # 一次 @ 之后最多接几张图。消息里明确提到"图/照片/截图/看这"才用满这个额度，
+  # 普通提问只留 1 张的余地 —— 防止"被 @ 一次就把后面所有图都吃进来"。
+  image_followup_budget: 2
+
+# ---------------- 上下文 ----------------
+context:
+  max_chars: 12000            # 送给模型的历史字符上限（旧包写死 2500，聊十来句就忘）
+  max_messages: 40            # 最多带多少条历史消息
+  store_dir: "./data/context"
+
+# ---------------- 发送 ----------------
+send:
+  max_segments: 1             # 一条回复最多拆成几段（1 = 不拆；旧包会拆成 7-8 条）
+  segment_delay: 0.6          # 分段之间的间隔（秒）
+  split_token: "\\"           # 人格提示词里约定的分段标记
+
+# ---------------- 人格 ----------------
+persona:
+  prompt_file: "./prompts/default.md"
+
+# ---------------- 限流与费用闸门 ----------------
+# 私聊配成 always 之后，任何能给这个号发消息的人都在花你的 API 额度 ——
+# 这四道闸是唯一的刹车。任何一项写 0 表示不限该项。
+limits:
+  enabled: true
+  per_user_per_minute: 6      # 同一个人每分钟最多回几条
+  per_chat_per_minute: 20     # 同一个群/会话每分钟最多几条（群被刷时保护）
+  daily_replies: 500          # 每天总共最多回几条（真正的费用闸门，跨天自动重置）
+  cooldown_seconds: 2         # 同一个人两条回复之间至少隔几秒
+
+# ---------------- 日志 ----------------
+log:
+  level: "INFO"
+  file: "./data/agent.log"
+  encoding: "utf-8"           # 旧包写 GBK，排查问题时全是乱码
+
+# ---------------- 引擎参数 ----------------
+# 数据库增量轮询的间隔（秒）。越小越及时，越费 CPU；1.0 是稳的起点。
+listener_interval: 1.0
+# 启动前多少秒以内的消息才算「新消息」。
+# 引擎的水位文件若存着旧水位（换机器、删过文件、或文件是别的进程留下的），
+# 首次轮询会把一整段历史当新消息推过来 —— 实测一次推了 18 条。
+# 超过这个宽限期的直接丢弃；0 = 不过滤（会把历史也当新消息处理）。
+startup_grace_sec: 120

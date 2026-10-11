@@ -1,0 +1,24 @@
+# 配置：含密钥，绝不入库
+config.yaml
+
+# 运行时数据
+data/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
